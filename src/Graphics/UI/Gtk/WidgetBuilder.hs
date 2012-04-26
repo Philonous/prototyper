@@ -65,9 +65,8 @@ addButton name action = do
 
 addProgressBar = addNewWidget $ progressBarNew
 
--- add a column to a tree view
 addColumn name renderers= do
-  (view, model, wrapper) <- ask
+  (view, model) <- ask
   col <- liftIO $ treeViewColumnNew
   liftIO $ set col [treeViewColumnTitle := name]
   forM_ renderers $ \i -> do
@@ -78,10 +77,10 @@ addColumn name renderers= do
   liftIO $ treeViewAppendColumn view col
   return col
 
-withNewTreeView wrapper model action = do
+withNewTreeView model action = do
   WA cont <- ask
-  treeView <- liftIO $ treeViewNewWithModel wrapper
-  lift $ runReaderT action (treeView, model, wrapper)
+  treeView <- liftIO $ treeViewNewWithModel model
+  lift $ runReaderT action (treeView, model)
   liftIO $ cont treeView
   return treeView
 

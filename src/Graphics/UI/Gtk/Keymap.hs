@@ -58,7 +58,7 @@ data NextMap = Reset -- reset Map to default
 data AbortKey = AbortKey deriving (Show, Typeable)
 instance Exception AbortKey
 
--- handleKey :: Web -> GTK.EventM GTK.EKey Bool
+-- handleKey :: Web -> GTK.EventM GTK.EKey Bool
 handleKey conf = do
   keyVal <-  keyvalToLower <$> GTK.eventKeyVal
   mods <- fromFlags <$> GTK.eventModifier

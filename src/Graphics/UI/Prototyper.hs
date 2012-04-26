@@ -32,6 +32,7 @@ data ReaderState = RS
   , inputBox      :: HBox
   , inputLabel    :: Label
   , inputEntry    :: Entry
+  , chooseWindow  :: (TreeView, ListStore (Char, (String, IO ())))
   , inputAction   :: IORef (String -> ReaderMonad ())
   }
 
@@ -41,6 +42,52 @@ type ReaderMonad a = ReaderT ReaderState IO a
 ---------------------------
 -- Input ------------------
 ---------------------------
+
+chars = ['1' .. '9'] ++ ['0'] ++ ['a'..'z']
+
+chooserKeymap view = mkKeymap . flip map (zip chars [0..])
+                  $ \(c, i) -> ( (0,[c])
+                               , (liftIO $ treeViewSetCursor view [i] Nothing))
+
+
+chooser = do
+    store <- liftIO $ listStoreNew []
+    treeView <- withNewTreeView store $ do
+        keyC <- addColumn "key" [ textRenderer (return . (: "") . fst) ]
+        entryC <- addColumn "entry" [ textRenderer (return . fst . snd)]
+        liftIO $ set entryC [treeViewColumnExpand := True]
+    liftIO $ on treeView rowActivated $ \path _ -> do
+        case path of
+            [i] -> do
+                (_, (_, action)) <- listStoreGetValue store i
+                action
+            _   -> error $ "chooser: expected plain path, got " ++ show path
+    liftIO $ addKeymap treeView True id $ chooserKeymap treeView
+    return (treeView, store)
+
+
+withChoice choices action = do
+    (treeView, store) <- asks chooseWindow
+    r <- ask
+    liftIO $ do
+        listStoreClear store
+        forM (zip chars choices) $ \(acc, (sStr, a)) ->
+            listStoreAppend store (acc, (sStr, flip runReaderT r $
+                                            deactivateChoice >> a >>= action))
+        widgetShow treeView
+        GTK.widgetGrabFocus treeView
+  where
+
+withChoice' ch a = withChoice (map (\(str, x) -> (str, return x)) ch) a
+
+deactivateChoice = do
+    (treeView, store) <- asks chooseWindow
+    mv <- asks mainView
+    liftIO $ do
+        widgetHide treeView
+        listStoreClear store
+        widgetGrabFocus mv
+
 
 activateInput prefill = do
   bar <- asks inputEntry
@@ -70,9 +117,9 @@ withInput labelText prefill action =  do
   liftIO $ GTK.labelSetText label labelText
   activateInput prefill
 
-withInput' t p a = do
-  r <- ask
-  withInput t p (runReaderT a r)
+setStatus txt = do
+    bar <- asks statusbar
+    liftIO $ labelSetText bar txt
 
 -- showInfoLabel text = do
 --   label <- asks infoLabel
@@ -91,41 +138,46 @@ withInput' t p a = do
 -- UI Main -------------
 ------------------------
 
-uiMain mainview myKeymap= do
+uiMain mainview myKeymap action = do
   initGUI
   timeoutAddFull (yield >> return True) priorityDefaultIdle 100 -- keep threads alive
   actionRef <- newIORef (const $ return ())
-  (((view, bar, logWindow, logToWindow, label, entry, inputBox),_),window) <- withMainWindow $ do
-    withVBoxNew $ do
-      v <- packGrow mainview
-      ((logWindow, logStr),logScroll) <- packGrow $ withScrolledWindow createLog
-      liftIO $ scrolledWindowSetPolicy logScroll PolicyNever PolicyAutomatic
-      bar <- packNatural $ addLabel
-      ((label, entry),inputBox) <- packNatural . withHBoxNew $ do
-        label <- packNatural addLabel
-        entry <- packGrow    addEntry
-        return (label, entry)
-      return (v, bar, logScroll, logStr, label, entry, inputBox)
+  (((view, bar, logWindow, logToWindow, label, entry, inputBox, ch@(treeView, store)), _ ), window) <- withMainWindow $ do
+      withVBoxNew $ do
+          v <- packGrow mainview
+          ch <- packGrow chooser
+          ((logWindow, logStr),logScroll) <- packGrow
+                                                $ withScrolledWindow createLog
+          liftIO $ scrolledWindowSetPolicy logScroll PolicyNever PolicyAutomatic
+          bar <- packNatural $ addLabel
+          ((label, entry),inputBox) <- packNatural . withHBoxNew $ do
+              label <- packNatural addLabel
+              entry <- packGrow    addEntry
+              return (label, entry)
+          return (v, bar, logScroll, logStr, label, entry, inputBox, ch)
   let globalState = RS
-       { mainView     =  view
-       , statusbar    =  bar
-       , logStr       =  \l -> logToWindow l >> GTK.labelSetText bar l
-       , logWindow    =  logWindow
-       , inputBox     =  inputBox
-       , inputLabel   =  label
-       , inputEntry   =  entry
-       , inputAction  =  actionRef
+       { mainView     = view
+       , statusbar    = bar
+       , logStr       = \l -> logToWindow l >> GTK.labelSetText bar l
+       , logWindow    = logWindow
+       , inputBox     = inputBox
+       , inputLabel   = label
+       , inputEntry   = entry
+       , chooseWindow = ch
+       , inputAction  = actionRef
        }
   on entry entryActivate $ do
     text <- entryGetText entry
     action <- readIORef actionRef
     flip runReaderT globalState $ do
-      deactivateInput
-      action text
+        deactivateInput
+        action text
   addKeymap view True (`runReaderT`  globalState )  myKeymap
   windowSetDefaultSize window 800 600
   widgetShowAll window
   widgetHide logWindow
   widgetHide inputBox
+  widgetHide treeView
   onDestroy window mainQuit
+  action
   mainGUI
