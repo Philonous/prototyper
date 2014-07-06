@@ -1,26 +1,33 @@
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE NoMonomorphismRestriction, TemplateHaskell, PackageImports, TypeFamilies, DeriveDataTypeable #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleContexts #-}
+
 module Graphics.UI.Prototyper where
 
-import           Prelude                   hiding (log, catch)
+import           Control.Monad.State
+import           Prelude hiding (log, catch)
 
-import           Control.Applicative       ((<$>))
-import           Control.Concurrent        (yield)
+import           Control.Applicative ((<$>))
+import           Control.Concurrent (yield)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.Reader
 
 import           Data.IORef
-import           Data.List                 (sortBy)
-import qualified Data.Map                  as Map
+import           Data.List (sortBy)
+import qualified Data.Map as Map
 import           Data.Maybe
-import           Data.Ord                  (comparing)
-import qualified Data.Traversable          as T
+import           Data.Ord (comparing)
+import qualified Data.Traversable as T
 import           Data.Tree
 
-import           Graphics.UI.Gtk           as GTK
+import           Graphics.UI.Gtk as GTK
 
-import           Graphics.UI.Gtk.Keymap
+import           Graphics.UI.Gtk.Keymap as Keymap
 import           Graphics.UI.Gtk.WidgetBuilder
 
 
@@ -43,19 +50,23 @@ type ReaderMonad a = ReaderT ReaderState IO a
 -- Input ------------------
 ---------------------------
 
+chars :: [Char]
 chars = ['1' .. '9'] ++ ['0'] ++ ['a'..'z']
 
+chooserKeymap :: (TreeViewClass self, MonadIO m, Ord t, Num t) =>
+                 self
+              -> Map.Map (t, KeyVal) (m ())
 chooserKeymap view = mkKeymap . flip map (zip chars [0..])
                   $ \(c, i) -> ( (0,[c])
                                , (liftIO $ treeViewSetCursor view [i] Nothing))
 
-
+chooser :: ReaderT WidgetAdder IO (TreeView, ListStore (Char, (String, IO ())))
 chooser = do
     store <- liftIO $ listStoreNew []
     treeView <- withNewTreeView store $ do
         keyC <- addColumn "key" [ textRenderer (return . (: "") . fst) ]
         entryC <- addColumn "entry" [ textRenderer (return . fst . snd)]
-        liftIO $ set entryC [treeViewColumnExpand := True]
+        lift $ set entryC [treeViewColumnExpand := True]
     liftIO $ on treeView rowActivated $ \path _ -> do
         case path of
             [i] -> do
@@ -66,6 +77,10 @@ chooser = do
     return (treeView, store)
 
 
+withChoice :: (MonadReader ReaderState m, MonadIO m) =>
+              [(String, ReaderT ReaderState IO a)]
+           -> (a -> ReaderT ReaderState IO ())
+           -> m ()
 withChoice choices action = do
     (treeView, store) <- asks chooseWindow
     r <- ask
@@ -78,8 +93,12 @@ withChoice choices action = do
         GTK.widgetGrabFocus treeView
   where
 
+withChoice' :: [(String, a)]
+               -> (a -> ReaderT ReaderState IO ())
+               -> ReaderT ReaderState IO ()
 withChoice' ch a = withChoice (map (\(str, x) -> (str, return x)) ch) a
 
+deactivateChoice :: ReaderT ReaderState IO ()
 deactivateChoice = do
     (treeView, store) <- asks chooseWindow
     mv <- asks mainView
@@ -88,7 +107,8 @@ deactivateChoice = do
         listStoreClear store
         widgetGrabFocus mv
 
-
+activateInput :: String
+              -> ReaderT ReaderState IO ()
 activateInput prefill = do
   bar <- asks inputEntry
   container <- asks inputBox
@@ -101,6 +121,7 @@ activateInput prefill = do
             , GTK.editablePosition := (-1)
             ]
 
+deactivateInput :: ReaderT ReaderState IO ()
 deactivateInput = do
   widget <- asks inputBox
   view <- asks mainView
@@ -110,6 +131,10 @@ deactivateInput = do
     GTK.widgetGrabFocus view
     writeIORef actionRef (const $ return ())
 
+withInput :: String
+          -> String
+          -> (String -> ReaderMonad ())
+          -> ReaderT ReaderState IO ()
 withInput labelText prefill action =  do
   label <- asks inputLabel
   actionRef <- asks inputAction
@@ -117,6 +142,7 @@ withInput labelText prefill action =  do
   liftIO $ GTK.labelSetText label labelText
   activateInput prefill
 
+setStatus :: (MonadReader ReaderState m, MonadIO m) => String -> m ()
 setStatus txt = do
     bar <- asks statusbar
     liftIO $ labelSetText bar txt
@@ -138,6 +164,10 @@ setStatus txt = do
 -- UI Main -------------
 ------------------------
 
+uiMain :: ReaderT WidgetAdder IO Widget
+       -> Keymap.Keymap (StateT NextMap (ReaderT ReaderState IO))
+       -> IO a
+       -> IO ()
 uiMain mainview myKeymap action = do
   initGUI
   timeoutAddFull (yield >> return True) priorityDefaultIdle 100 -- keep threads alive
