@@ -1,3 +1,6 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE RankNTypes #-}
@@ -5,106 +8,152 @@
 
 module Graphics.UI.Gtk.WidgetBuilder where
 
-import Control.Monad.Reader
-import Data.IORef
-import Graphics.UI.Gtk
+import           Control.Applicative
+import           Control.Lens hiding (set)
+import           Control.Lens.TH
+import           Control.Monad.Reader
+import qualified Data.Foldable as DF
+import           Data.IORef
+import           Data.Text (Text)
+import qualified Data.Text as Text
+import           Graphics.UI.Gtk
 
-newtype WidgetAdder =  WA (forall w . WidgetClass w => w -> IO ())
+data ReaderState = RS
+  { _statusbar     :: Label
+  , _logStr        :: String -> IO ()
+  , _logWindow     :: ScrolledWindow
+  , _mainView      :: Widget
+  , _inputBox      :: HBox
+  , _inputLabel    :: Label
+  , _inputEntry    :: Entry
+  , _chooseWindow  :: (TreeView, ListStore (Char, (String, IO ())))
+  , _inputAction   :: IORef (String -> ReaderT ReaderState IO ())
+  }
 
-withContainer :: (WidgetClass w) =>
-                 IO w
-              -> ReaderT w IO t
-              -> ReaderT WidgetAdder IO (t, w)
+makeLenses ''ReaderState
+
+data GUIState c = GUIState { _readerState :: ReaderState
+                           , _widgetAdder :: Widget -> IO ()
+                           , _container :: c
+                           }
+
+makeLenses ''GUIState
+
+newtype MkGUI c a = MkGUI {fromMkGUI :: ReaderT (GUIState c) IO a}
+                  deriving (Functor,Applicative, Monad, MonadIO)
+
+getRState = MkGUI $ view readerState
+
+contAdd :: WidgetClass w => w -> MkGUI c ()
+contAdd w = do
+    add <- MkGUI $ view widgetAdder
+    liftIO $ add (toWidget w)
+
+withContainer :: (ContainerClass t,ContainerClass c) =>
+                 IO c
+              -> MkGUI c a
+              -> MkGUI t (a, c)
 withContainer new action = do
-  WA cont <- ask
-  c <- liftIO $ new
-  res <- lift $ runReaderT action c
-  liftIO $ cont c
+  c <- liftIO new
+  st <- getRState
+  let st' = GUIState st (containerAdd c) c
+  contAdd c
+  res <- liftIO $ runReaderT (fromMkGUI action) st'
   return (res,c)
 
-addCont :: ContainerClass t =>
-           ReaderT WidgetAdder IO b -> ReaderT t IO b
-addCont action = do
-  container <- ask
-  lift $ runReaderT action (WA $ containerAdd container)
+setWA :: (c -> Widget -> IO ()) -> MkGUI c a -> MkGUI c a
+setWA f (MkGUI action) = MkGUI $ do
+  st <- ask
+  liftIO $ runReaderT action (st & widgetAdder .~ f (st ^. container))
 
 boxPackS :: BoxClass t =>
             Int
          -> Packing
-         -> ReaderT WidgetAdder IO b
-         -> ReaderT t IO b
-boxPackS padding style  action = do
-  container <- ask
-  lift $ runReaderT action (WA $ \w -> boxPackStart container w style padding)
+         -> MkGUI t a
+         -> MkGUI t a
+boxPackS padding style = setWA $ \c w -> boxPackStart c w style padding
 
-boxPackS' :: BoxClass t => Packing -> ReaderT WidgetAdder IO b -> ReaderT t IO b
+boxPackS' :: BoxClass t => Packing -> MkGUI t a -> MkGUI t a
 boxPackS' style action = boxPackS 0 style action
 
-packGrow :: BoxClass t => ReaderT WidgetAdder IO b -> ReaderT t IO b
+packGrow :: BoxClass t => MkGUI t a -> MkGUI t a
 packGrow = boxPackS' PackGrow
 
-packNatural :: BoxClass t => ReaderT WidgetAdder IO b -> ReaderT t IO b
+packNatural :: BoxClass t => MkGUI t a -> MkGUI t a
 packNatural = boxPackS' PackNatural
 
-addPage :: NotebookClass t =>
-           String -> ReaderT WidgetAdder IO b -> ReaderT t IO b
-addPage name action = do
-  container <- ask
-  lift $ runReaderT action (WA $ \w -> notebookAppendPage container w name >> return () )
+addPage :: NotebookClass n =>
+           Text
+        -> MkGUI n a
+        -> MkGUI n a
+addPage name = setWA (\c w -> notebookAppendPage c w name >> return ())
 
-withVBoxNew :: ReaderT VBox IO t -> ReaderT WidgetAdder IO (t, VBox)
+withVBoxNew :: ContainerClass c => MkGUI VBox a -> MkGUI c (a, VBox)
 withVBoxNew = withContainer (vBoxNew False 0)
 
-withHBoxNew :: ReaderT HBox IO t -> ReaderT WidgetAdder IO (t, HBox)
+withHBoxNew :: ContainerClass t => MkGUI HBox a -> MkGUI t (a, HBox)
 withHBoxNew = withContainer (hBoxNew False 0)
 
-withHButtonBoxNew :: ReaderT VButtonBox IO t
-                  -> ReaderT WidgetAdder IO (t, VButtonBox)
+withFrame :: (ContainerClass c) =>
+             Maybe Text
+          -> MkGUI Frame a
+          -> MkGUI c (a, Frame)
+withFrame mbLabel = withContainer $ do
+    fr <- frameNew
+    DF.forM_ mbLabel $ \label -> liftIO $ frameSetLabel fr label
+    return fr
+
+withHButtonBoxNew :: ContainerClass c =>
+                     MkGUI VButtonBox a
+                  -> MkGUI c (a, VButtonBox)
 withHButtonBoxNew = withContainer (vButtonBoxNew)
 
-withScrolledWindow :: ReaderT WidgetAdder IO t
-                   -> ReaderT WidgetAdder IO (t, ScrolledWindow)
-withScrolledWindow = withContainer (scrolledWindowNew Nothing Nothing) . addCont
+withScrolledWindow :: ContainerClass c =>
+                      MkGUI ScrolledWindow a
+                   -> MkGUI c (a, ScrolledWindow)
+withScrolledWindow = withContainer $ scrolledWindowNew Nothing Nothing
 
-withNotebook :: ReaderT Notebook IO t -> ReaderT WidgetAdder IO (t, Notebook)
+withNotebook :: ContainerClass c => MkGUI Notebook a -> MkGUI c (a, Notebook)
 withNotebook = withContainer notebookNew
 
-withAlignment :: Float
+withAlignment :: ContainerClass t =>
+                 Float
               -> Float
               -> Float
               -> Float
-              -> ReaderT Alignment IO t
-              -> ReaderT WidgetAdder IO (t, Alignment)
+              -> MkGUI Alignment a
+              -> MkGUI t (a, Alignment)
 withAlignment xa ya xs ys = withContainer $ alignmentNew xa ya xs ys
 
-withMainWindow :: ReaderT WidgetAdder IO t -> IO (t, Window)
-withMainWindow action = do
+withMainWindow :: ReaderState -> MkGUI Window t -> IO (t, Window)
+withMainWindow st (MkGUI action) = do
   w <- windowNew
-  a <- runReaderT action (WA $ containerAdd w)
+  a <- runReaderT action (GUIState st (containerAdd w) w)
   return (a,w)
 
-addNewWidget :: WidgetClass b => IO b -> ReaderT WidgetAdder IO b
+addNewWidget :: WidgetClass w => IO w -> MkGUI c w
 addNewWidget new = do
-  WA cont <- ask
-  w <- lift new
-  lift $ cont w
+  w <- liftIO new
+  contAdd w
   return w
 
-addLabel :: ReaderT WidgetAdder IO Label
-addLabel = addNewWidget $ labelNew Nothing
 
-addEntry :: ReaderT WidgetAdder IO Entry
+addLabel :: Maybe Text -> MkGUI c Label
+addLabel mbLabelText = addNewWidget $ labelNew mbLabelText
+
+addEntry :: MkGUI c Entry
 addEntry = addNewWidget entryNew
 
-addButton :: String -> IO () -> ReaderT WidgetAdder IO Button
+addButton :: Text -> ReaderT ReaderState IO () -> MkGUI c Button
 addButton name action = do
   b <- liftIO $ buttonNew
   liftIO $ buttonSetLabel b name
-  liftIO $ on b buttonActivated action
+  st <- MkGUI $ view readerState
+  liftIO $ on b buttonActivated $ runReaderT action st
   addNewWidget $ return b
 
-addProgressBar :: ReaderT WidgetAdder IO ProgressBar
-addProgressBar = addNewWidget $ progressBarNew
+addProgressBar :: MkGUI c ProgressBar
+addProgressBar = addNewWidget progressBarNew
 
 addColumn :: (CellRendererClass cell, TreeViewClass self) =>
              String
@@ -125,12 +174,11 @@ addColumn name renderers= do
 withNewTreeView :: TreeModelClass t =>
                    t
                 -> ReaderT (TreeView, t) IO a
-                -> ReaderT WidgetAdder IO TreeView
+                -> MkGUI c TreeView
 withNewTreeView model action = do
-  WA cont <- ask
-  treeView <- lift $ treeViewNewWithModel model
-  lift $ runReaderT action (treeView, model)
-  lift $ cont treeView
+  treeView <- liftIO $ treeViewNewWithModel model
+  liftIO $ runReaderT action (treeView, model)
+  contAdd treeView
   return treeView
 
 -- | cellLayoutSetAttributes
@@ -157,7 +205,7 @@ textBufferAppendLine buffer entry = do
   end <- textBufferGetEndIter buffer
   textBufferInsert buffer end (entry ++ "\n")
 
-createLog :: ReaderT WidgetAdder IO (TextView, [Char] -> IO ())
+createLog :: MkGUI c (TextView, [Char] -> IO ())
 createLog = do
   text <- liftIO $ textViewNew
   buffer <- liftIO $ textViewGetBuffer text

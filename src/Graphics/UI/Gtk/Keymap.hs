@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
@@ -94,4 +95,3 @@ submap map = do
   ref <- asks keymapRef
   liftIO $ modifyIORef ref (map :)
   put Keep
-

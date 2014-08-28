@@ -23,6 +23,8 @@ Library
                    , mtl
                    , glib
                    , containers
+                   , text
+                   , lens
   hs-source-dirs: src
   exposed-modules:  Graphics.UI.Prototyper
                   , Graphics.UI.Gtk.WidgetBuilder
