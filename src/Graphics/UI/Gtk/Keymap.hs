@@ -6,17 +6,19 @@
 module Graphics.UI.Gtk.Keymap where
 
 import           Data.IORef
-import qualified Data.Map                 as Map
+import qualified Data.Map as Map
+import           Data.Text (Text)
+import qualified Data.Text as Text
 import           Data.Typeable
 
-import           Control.Applicative      ((<$>))
-import           Control.Exception        as Ex
+import           Control.Applicative ((<$>))
+import           Control.Exception as Ex
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Control.Monad.Trans
 
 import           Graphics.UI.Gtk.Gdk.Keys (keyvalToLower)
-import qualified Graphics.UI.Gtk          as GTK
+import qualified Graphics.UI.Gtk as GTK
 
 import           System.Glib.Flags
 
@@ -81,9 +83,11 @@ handleKey conf = do
       return True
 
 
+mkKeymap :: [((Int, Text), m ())] -> Keymap m
 mkKeymap keyDefs = Map.fromList $ for keyDefs $ \ ((mod,keyname),action) -> ((mod, keyvalToLower $ GTK.keyFromName keyname) , action)
    where
      for = flip map
+
 addKeymap widget typeThroughOnMissmatch runAction keymap = do
   keymapRef <- newIORef [keymap]
   typeThroughRef <- newIORef False

@@ -5,6 +5,7 @@
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Graphics.UI.Gtk.WidgetBuilder where
 
@@ -31,6 +32,16 @@ data ReaderState = RS
   }
 
 makeLenses ''ReaderState
+
+toggleLog :: (MonadReader ReaderState m, MonadIO m) => m ()
+toggleLog = do
+    w <- view logWindow
+    liftIO $ set w [widgetVisible :~ not]
+
+logToWindow :: (MonadReader ReaderState m, MonadIO m) => String -> m ()
+logToWindow str = do
+    ls <- view logStr
+    liftIO $ ls str
 
 data GUIState c = GUIState { _readerState :: ReaderState
                            , _widgetAdder :: Widget -> IO ()
@@ -61,6 +72,12 @@ withContainer new action = do
   res <- liftIO $ runReaderT (fromMkGUI action) st'
   return (res,c)
 
+withBoxContainer :: (BoxClass c, ContainerClass t) =>
+                    IO c
+                 -> MkGUI c a
+                 -> MkGUI t (a, c)
+withBoxContainer new action = withContainer new (packNatural action)
+
 setWA :: (c -> Widget -> IO ()) -> MkGUI c a -> MkGUI c a
 setWA f (MkGUI action) = MkGUI $ do
   st <- ask
@@ -79,6 +96,12 @@ boxPackS' style action = boxPackS 0 style action
 packGrow :: BoxClass t => MkGUI t a -> MkGUI t a
 packGrow = boxPackS' PackGrow
 
+packRepel :: BoxClass t => MkGUI t a -> MkGUI t a
+packRepel = boxPackS' PackRepel
+
+grow :: BoxClass t => MkGUI t a -> MkGUI t a
+grow = packGrow
+
 packNatural :: BoxClass t => MkGUI t a -> MkGUI t a
 packNatural = boxPackS' PackNatural
 
@@ -89,10 +112,10 @@ addPage :: NotebookClass n =>
 addPage name = setWA (\c w -> notebookAppendPage c w name >> return ())
 
 withVBoxNew :: ContainerClass c => MkGUI VBox a -> MkGUI c (a, VBox)
-withVBoxNew = withContainer (vBoxNew False 0)
+withVBoxNew = withBoxContainer (vBoxNew False 0)
 
 withHBoxNew :: ContainerClass t => MkGUI HBox a -> MkGUI t (a, HBox)
-withHBoxNew = withContainer (hBoxNew False 0)
+withHBoxNew = withBoxContainer (hBoxNew False 0)
 
 withFrame :: (ContainerClass c) =>
              Maybe Text
@@ -106,7 +129,7 @@ withFrame mbLabel = withContainer $ do
 withHButtonBoxNew :: ContainerClass c =>
                      MkGUI VButtonBox a
                   -> MkGUI c (a, VButtonBox)
-withHButtonBoxNew = withContainer (vButtonBoxNew)
+withHButtonBoxNew = withBoxContainer (vButtonBoxNew)
 
 withScrolledWindow :: ContainerClass c =>
                       MkGUI ScrolledWindow a
@@ -173,13 +196,33 @@ addColumn name renderers= do
 
 withNewTreeView :: TreeModelClass t =>
                    t
-                -> ReaderT (TreeView, t) IO a
+                -> ReaderT (TreeView, t) IO ()
                 -> MkGUI c TreeView
 withNewTreeView model action = do
   treeView <- liftIO $ treeViewNewWithModel model
   liftIO $ runReaderT action (treeView, model)
   contAdd treeView
   return treeView
+
+
+withTreeViewListStore :: ReaderT (TreeView, ListStore a) IO ()
+                      -> (a -> ReaderT ReaderState IO ())
+                      -> MkGUI c (ListStore a, TreeView)
+withTreeViewListStore action onItem = do
+    store <- liftIO $ listStoreNew []
+    st <- MkGUI $ view readerState
+    treeView <- withNewTreeView store action
+    liftIO $ on treeView rowActivated $ \path _ -> case path of
+        [i] -> execReaderT st . onItem =<< listStoreGetValue store i
+        _   -> error $ "chooser: expected plain path, got " ++ show path
+    return (store, treeView)
+  where
+    execReaderT = flip runReaderT
+
+setListStore :: ListStore a -> [a] -> IO ()
+setListStore store list = do
+    listStoreClear store
+    forM_ list $ listStoreAppend store
 
 -- | cellLayoutSetAttributes
 cLSA :: (TypedTreeModelClass model, CellLayoutClass self,

@@ -11,9 +11,11 @@ module Graphics.UI.Prototyper where
 
 import           Control.Lens hiding (set)
 import           Control.Monad.State
+import           Data.Monoid
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Prelude hiding (log, catch)
+import           System.Exit
 
 import           Control.Applicative ((<$>))
 import           Control.Concurrent (yield)
@@ -46,9 +48,9 @@ type ReaderMonad a = ReaderT ReaderState IO a
 chars :: [Char]
 chars = ['1' .. '9'] ++ ['0'] ++ ['a'..'z']
 
-chooserKeymap :: (TreeViewClass self, MonadIO m, Ord t, Num t) =>
+chooserKeymap :: (TreeViewClass self, MonadIO m) =>
                  self
-              -> Map.Map (t, KeyVal) (m ())
+              -> Map.Map (Int, KeyVal) (m ())
 chooserKeymap view = mkKeymap . flip map (zip chars [0..])
                   $ \(c, i) -> ( (0, Text.singleton c)
                                , (liftIO $ treeViewSetCursor view [i] Nothing))
@@ -198,7 +200,11 @@ uiMain (MkGUI mainview) myKeymap action = do
     flip runReaderT globalState $ do
         deactivateInput
         action text
-  addKeymap viewContainer True (`runReaderT`  globalState )  myKeymap
+  let defaultMap = mkKeymap [ ((control, "l"), toggleLog)
+                            , ((control, "q"), liftIO exitSuccess)
+                            ]
+      keyMap = defaultMap <> myKeymap
+  addKeymap viewContainer True (`runReaderT`  globalState ) keyMap
   windowSetDefaultSize window 800 600
   widgetShowAll window
   widgetHide logWindow
